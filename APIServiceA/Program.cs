@@ -1,5 +1,8 @@
+using APIServiceA.Handlers;
 using RabbitMQ;
 using RabbitMQ.Client;
+using RabbitMQ.Interfaces;
+using System.Reflection;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -12,12 +15,26 @@ builder.Services.AddSingleton<IConnectionFactory>(new ConnectionFactory() { Host
 builder.Services.AddSingleton<IRabbitMQService, RabbitMQService>();
 
 
+// Register all handlers dynamically
+var handlerTypes = Assembly.GetExecutingAssembly()
+    .GetTypes()
+    .Where(t => typeof(IMessageHandler).IsAssignableFrom(t) && !t.IsInterface && !t.IsAbstract);
+
+foreach (var handler in handlerTypes)
+{
+    builder.Services.AddScoped(handler);  // Register each handler
+}
+
+
+builder.Services.AddSingleton<HandlersRegistry>();
+
 builder.Services.AddHostedService(provider => 
 {
     var factory = provider.GetRequiredService<IConnectionFactory>();
-    var service = provider.GetRequiredService<IRabbitMQService>();
+    var service = provider.GetRequiredService<IRabbitMQService>(); 
+    var handlersRegistry = provider.GetRequiredService<HandlersRegistry>();
 
-    return new RabbitMQConsumer(RabbitMQQueues.ApiAQueue, service, factory); 
+    return new RabbitMQConsumer(RabbitMQQueues.ApiAQueue, service, factory, handlersRegistry); 
 });
 
 var app = builder.Build();

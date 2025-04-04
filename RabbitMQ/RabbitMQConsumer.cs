@@ -1,8 +1,8 @@
 ﻿using RabbitMQ.Client.Events;
 using RabbitMQ.Client;
-using System.Text;
 using Microsoft.Extensions.Hosting;
 using System.Reflection;
+using System.Text.Json;
 
 namespace RabbitMQ
 {
@@ -13,12 +13,13 @@ namespace RabbitMQ
         private IChannel _channel;
         private readonly IRabbitMQService _rabbitMQService;
         private readonly IConnectionFactory _factory;
+        private readonly MessageHandlerRegistry _messageHandlerRegistry;
 
-
-        public RabbitMQConsumer(string queue, IRabbitMQService rabbitMQService, IConnectionFactory factory)
+        public RabbitMQConsumer(string queue, IRabbitMQService rabbitMQService, IConnectionFactory factory, MessageHandlerRegistry messageHandlerRegistry)
         {
             _rabbitMQService = rabbitMQService;
             _factory = factory;
+            _messageHandlerRegistry = messageHandlerRegistry;
             _queue = queue;
         }
 
@@ -36,23 +37,53 @@ namespace RabbitMQ
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
             string projectName = Assembly.GetEntryAssembly()?.GetName().Name;
-
             var consumer = new AsyncEventingBasicConsumer(_channel);
             consumer.ReceivedAsync += async (model, ea) =>
             {
-                var body = ea.Body.ToArray();
-                var message = Encoding.UTF8.GetString(body);
-                Console.WriteLine($"{projectName} Received: {message}");
+                try
+                {
+                    var body = ea.Body.ToArray();
+                    var message = JsonSerializer.Deserialize<Message>(body);
+                    var jsonMessage = JsonSerializer.Serialize(message);
 
-                var replyProps = ea.BasicProperties;
+                    if (message == null)
+                        throw new Exception("Invalid Message!");
 
-                // Send a response back to API1
-                var responseMessage = $"Response from {projectName}: {message}";
 
-                if(string.IsNullOrEmpty(replyProps.ReplyTo) == false)
-                    await _rabbitMQService.PublishMessage(replyProps.ReplyTo, string.Empty, responseMessage);
+                    Console.WriteLine($"{projectName} Received: {jsonMessage}");
 
-                await Task.CompletedTask;
+
+                    if(string.IsNullOrEmpty(message.Command) == false) // Process the request
+                    {
+
+                        if (_messageHandlerRegistry.TryGetHandler(message.Command, out var handler))
+                        {
+                            await handler.HandleAsync(message.Data);
+
+                            var responseMessage = new Message { Data = $"Response from {projectName}: {handler.GetType().Name} was executed", IsSuccessful = true };
+
+                            var replyProps = ea.BasicProperties; 
+                            if (string.IsNullOrEmpty(replyProps.ReplyTo) == false)
+                                await _rabbitMQService.PublishMessage(replyProps.ReplyTo, string.Empty, responseMessage);
+
+                        }
+                        else
+                        {
+                            Console.WriteLine($"[Consumer] Unknown command: {message.Command}");
+                        }
+                    }
+
+
+                    await Task.CompletedTask;
+                }
+                catch (Exception ex)
+                {
+                    // LOG ERROR
+
+                    var responseMessage = new Message { Data =  $"An error occured while processing the message, Error message: {ex.Message}", IsSuccessful = false };
+                    await _rabbitMQService.PublishMessage(ea.BasicProperties.ReplyTo, string.Empty, responseMessage);
+
+                }
             };
 
             await _channel.BasicConsumeAsync(queue: _queue, autoAck: true, consumer: consumer);

@@ -15,9 +15,11 @@ namespace APIServiceB.Controllers
         }
 
         [HttpPost("send")]
-        public async Task<ActionResult<string>> SendMessageAsync([FromBody] string message)
+        public async Task<ActionResult<string>> SendMessageAsync([FromBody] string data)
         {
-            await _rabbitMQService.PublishMessage(RabbitMQQueues.ApiAQueue, RabbitMQQueues.ApiBQueue,message);
+            var message = new Message { Command = "ProcessOrder", Data = data };
+
+            await _rabbitMQService.PublishMessage(RabbitMQQueues.ApiAQueue, RabbitMQQueues.ApiBQueue, message);
             return Ok();
         }
     }
